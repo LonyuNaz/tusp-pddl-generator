@@ -21,6 +21,7 @@ class DirectionStrategy(Enum):
 class TrackOccupationStrategy(Enum):
     OCCUPIED_LENGTH = 1
     STACK_LOCATION = 2
+    ORDER = 3
     
 class GoalStates(Enum):
     IS_PARKING = 1
@@ -169,6 +170,7 @@ class ShuntingYard:
 
     def set_entry_track_connections(self, entry_track_connections: List[str], a_side: bool = True):
         self.entry_track_connections = entry_track_connections
+
     def remove_track(self, name: str):
         self.tracks = [t for t in self.tracks if t.name != f"track_{name}"]
         self.track_connections = [c for c in self.track_connections if f"track_{name}" not in str(c)]
@@ -346,8 +348,10 @@ class ShuntingYard:
         instance_text += [""]
 
         instance_text += ["\t; track lengths", "\t; ================================ "]
-        instance_text += [f"\t(= (track_length {track.name}) {max(track.length, max_train_length)})" for track in self.tracks]
+        instance_text += [f"\t(= (track_length {track.name}) {max(track.length, max_train_length)})" for track in self.tracks[:-1]]
+        instance_text += [f"\t(= (track_length {self.tracks[-1].name}) {self.tracks[-1].length})"]
         instance_text += [""]
+        
 
         instance_text += ["\t; track trains", "\t; ================================ "]
         for idx, track in enumerate(self.tracks):
@@ -371,7 +375,9 @@ class ShuntingYard:
             elif self.track_occupation_strategy == TrackOccupationStrategy.STACK_LOCATION:
                 instance_text += [f"\t(= (stack_Aside_distance_to_end_of_track {track.name}) 0)"]
                 instance_text += [f"\t(= (stack_Bside_distance_to_end_of_track {track.name}) {aside_len})"]
-        
+        if self.track_occupation_strategy == TrackOccupationStrategy.ORDER:
+            instance_text += [f"\t(= (train_order_on_track {self.trains[i].name}) {i+1})" for i in range(len(self.trains))]
+
         instance_text += [""]
         instance_text += ["\t; inter track connections", "\t; ================================ "]
         instance_text += [f"\t(tracks_linked {track_bside.name} {track_aside.name})" for track_bside, track_aside in self.track_connections]
@@ -419,9 +425,12 @@ class ShuntingYard:
         return 
 
     def _generate_entry_track_numeric(self):
-        tot_len = sum(train.length for train in self.trains)
+        if self.track_occupation_strategy == TrackOccupationStrategy.ORDER:
+            entry_track = Track("entry", 0)
+        else:
+            tot_len = sum(train.length for train in self.trains)
+            entry_track = Track("entry", tot_len)
 
-        entry_track = Track("entry", tot_len)
         entry_track.parking = False
 
         if self.tracks[-1].name != "entry":
