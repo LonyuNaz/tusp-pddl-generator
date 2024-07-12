@@ -25,8 +25,15 @@ class TrackOccupationStrategy(Enum):
     
 class GoalStates(Enum):
     IS_PARKING = 1
-    SERVICED_PARKING = 2
+    WAS_SERVICED = 2
+    PARKING_AFTER_SERVICE = 3
+    LOCATION_AFTER_SERVICE = 4
+    EXIT = 5
+    LOCATION = 6
 
+class Direction(Enum):
+    ASIDE = 1
+    BSIDE = 2
 
 class Train:
 
@@ -35,6 +42,10 @@ class Train:
         self.length = length
         self.speed = speed
         self.active = active
+        self.order = 1
+        self.location: Track = None
+        self.goal: GoalStates = None
+        self.destination: Track = None
 
     def __str__(self) -> str:
         return f"name: {self.name} --- length: {self.length} --- speed: {self.speed} --- active: {self.active}" 
@@ -50,6 +61,7 @@ class Track:
         self.length = length
         self.parking = parking
         self.servicing = servicing
+        self.num_trains = 0
 
     def __str__(self) -> str:
         return f"name: {self.name} --- length: {self.length} --- parking: {self.parking}" 
@@ -67,7 +79,6 @@ class ShuntingYard:
                  direction_strategy: DirectionStrategy = DirectionStrategy.Aside,
                  negative_preconditions = False,
                  track_occupation_strategy: TrackOccupationStrategy = TrackOccupationStrategy.STACK_LOCATION,
-                 goal_states: GoalStates = GoalStates.IS_PARKING,
                  max_concurrent_movements: int = 0
                 ):
         self.domain_name = domain_name
@@ -88,10 +99,10 @@ class ShuntingYard:
         self.negative_preconditions = negative_preconditions
 
         self.track_occupation_strategy = track_occupation_strategy
-        self.goal_states = goal_states
         self.max_concurrent_movements = max_concurrent_movements
 
-    def from_json(self, filename: str, include_switches=False):
+
+    def load_location_json(self, filename: str, include_switches=False):
 
         with open(filename, 'r') as f:
             json_txt = f.read()
@@ -136,6 +147,78 @@ class ShuntingYard:
         self.set_tracks(tracks_parsed)
         self.set_track_connections(links)
 
+    def load_train_json(self, filename: str):
+
+        with open(filename, 'r') as f:
+            json_txt = f.read()
+        obj = json.loads(json_txt)
+
+        arrivals = obj['arrivals']
+        departures = obj['departures']
+
+        self.trains = []
+        for arrival in arrivals:
+            if arrival['name'] in [t.name for t in self.trains]:
+                raise Exception('Duplicate train name in arrivals')
+            self.trains.append(Train(**arrival))
+
+        names = [t.name.split('train_')[1] for t in self.trains]
+        for departure in departures:
+            if departure['name'] not in names:
+                raise Exception(f'Departing train "{departure['name']}" not in list of arrivals')
+            self.exit_order.append(self.trains[names.index(departure['name'])])
+
+    def load_state_from_plan(self, filename: str):
+        with open(filename, 'r') as f:
+            actions = f.readlines()
+        move_actions = [a.lower() for a in actions if 'move' in a.lower()]
+        train_info = dict()
+        for idx, move in enumerate(move_actions):
+            train_names = re.findall('train_\w+', move)
+            track_names = re.findall('track_\w+', move)
+            if len(train_names) != 1:
+                raise Exception(f'Found {len(train_names)} trains but expected 1')
+            if len(track_names) != 2:
+                raise Exception(f'Found {len(track_names)} tracks but expected 2')
+            if 'aside' in move:
+                dir = Direction.ASIDE
+            elif 'bside' in move:
+                dir = Direction.BSIDE
+            else:
+                raise Exception('Could not get direction')
+            train_info[train_names[0]] = {'dir':dir, 'dest':track_names[-1], 'order':idx}
+        names_sorted = sorted(train_info.keys(), key=lambda x: train_info[x]['order'])
+        for idx, tname in enumerate(names_sorted):
+            tn_i = self.get_train_idx(tname)
+            info = train_info[tname]
+            tk_i = self.get_track_idx(info['dest'])
+            self.tracks[tk_i].num_trains += 1
+            self.tracks[tk_i].length -= self.trains[tn_i].length
+            self.trains[tn_i].location = self.tracks[tk_i]
+            if info['dir'] == Direction.BSIDE:
+                self.trains[tn_i].order = 1
+                for i in range(idx):
+                    old_name = names_sorted[i]
+                    old_tn_i = self.get_train_idx(old_name)
+                    old_info = train_info[old_name]
+                    old_tk_i = self.get_track_idx(old_info['dest'])
+                    if self.tracks[old_tk_i].name == self.tracks[tk_i].name:
+                        self.trains[old_tn_i].order += 1
+            else:
+                self.trains[tn_i].order = self.tracks[tk_i].num_trains
+            print(info)
+            print(self.trains[tn_i].location)
+
+    def get_train_idx(self, name: str):
+        for i in range(len(self.trains)):
+            if self.trains[i].name.lower().endswith(name.lower()):
+                return i
+    
+    def get_track_idx(self, name: str):
+        for i in range(len(self.tracks)):
+            if self.tracks[i].name.lower().endswith(name.lower()):
+                return i
+
     def set_exit_order(self, names: List[str]):
         self.exit_order = []
         for name in names:
@@ -146,19 +229,22 @@ class ShuntingYard:
         
 
     def set_servicing_tracks(self, names: List[str]):
+        all_lengths = sorted([t.length for t in self.trains])
+        max_train_length = all_lengths[-1]
         for track in self.tracks:
             if any(track.name.endswith(name) for name in names):
                 track.servicing = True
                 track.parking = False
+                track.length = max_train_length
 
     def set_drivers(self, names: List[str]):
         self.drivers = names
 
-    def set_trains(self, trains: List[Tuple[str, int, int, bool]]):
-        self.trains = [Train(name, length, speed, active) for name, length, speed, active in trains]
+    def set_trains(self, trains: List[Tuple[str, int, bool]]):
+        self.trains = [Train(name, length, active) for name, length, active in trains]
 
     def set_tracks(self, tracks: List[Tuple[str, int, bool]]):
-        self.tracks = [Track(name, length, parking) for name, length, parking in tracks]
+        self.tracks = [Track(name=name, length=length, parking=parking) for name, length, parking in tracks]
 
     def set_track_connections(self, track_connections: List[Tuple[str, str]]):
         self.track_connections = []
@@ -169,6 +255,7 @@ class ShuntingYard:
             self.track_connections.append((track_bside,track_aside))
 
     def set_entry_track_connections(self, entry_track_connections: List[str], a_side: bool = True):
+        self.is_entry_connection_a_side = a_side
         self.entry_track_connections = entry_track_connections
 
     def remove_track(self, name: str):
@@ -182,11 +269,11 @@ class ShuntingYard:
         for left in lefts:
             if left not in new_lefts:
                 new_lefts.append(left)
-                rights = [c[1].name for c in self.track_connections if c[0].name == left]
+                rights = [c[0].name for c in self.track_connections if c[1].name == left]
                 for right in rights:
                     if right not in new_rights:
                         new_rights.append(right)
-                    similar_lefts = [c[0].name for c in self.track_connections if c[0].name in lefts and c[1].name == right]
+                    similar_lefts = [c[1].name for c in self.track_connections if c[1].name in lefts and c[0].name == right]
                     for l in similar_lefts:
                         if l not in new_lefts:
                             new_lefts.append(l)
@@ -196,49 +283,48 @@ class ShuntingYard:
             
              
 
-    def visualize(self, track_name=None, figsize=(12,12)): 
+    def visualize(self, track_name=None, figsize=(12,12), savefig: bool = False): 
         G = nx.Graph() 
 
         if track_name is None:
             cons = self.track_connections.copy()
-            lefts = [conn[0].name for conn in self.track_connections] 
-            rights = [conn[1].name for conn in self.track_connections]
+            lefts = [conn[1].name for conn in self.track_connections] 
+            rights = [conn[0].name for conn in self.track_connections]
             current_lefts = [t for t in lefts if t not in rights]
             start_x = 0
             nodes_added = []
             graph_height = len(self.tracks) / 2
             while len(cons) > 0:
-                print(len(cons))
                 current_lefts, next_lefts = self.order_nodes(current_lefts)
                 current_lefts = [l for l in current_lefts if l not in nodes_added]
                 if len(current_lefts) == 0:
                     break
                 for idx, l in enumerate(current_lefts):
                     w = start_x + ((random() * 2) - 1) * 0.1
-                    h = (graph_height - len(current_lefts)) / 2 + idx
+                    h = ((graph_height - len(current_lefts)) / 2 + idx) + ((random() * 2) - 1) * 0.1
                     G.add_node(l,pos=(w,h),label=l)
                     nodes_added.append(l)
                 start_x += 1
-                cons = [c for c in cons if c[0].name not in current_lefts]
-                lefts = [conn[0].name for conn in cons ] 
-                rights = [conn[1].name for conn in cons ] 
+                cons = [c for c in cons if c[1].name not in current_lefts]
+                lefts = [conn[1].name for conn in cons ] 
+                rights = [conn[0].name for conn in cons ] 
                 current_lefts = next_lefts
-            lefts = [conn[0].name for conn in self.track_connections if conn[0].name not in nodes_added]
-            rights = [conn[1].name for conn in self.track_connections if conn[1].name not in nodes_added]
+            lefts = [conn[1].name for conn in self.track_connections if conn[1].name not in nodes_added]
+            rights = [conn[0].name for conn in self.track_connections if conn[0].name not in nodes_added]
             for idx, l in enumerate(lefts):
                 w = start_x + ((random() * 2) - 1) * 0.1
-                h = (graph_height - len(lefts)) / 2 + idx
+                h = ((graph_height - len(lefts)) / 2 + idx) + + ((random() * 2) - 1) * 0.1
                 G.add_node(l,pos=(w,h),label=l)
             for idx, r in enumerate(rights):
                 w = start_x + ((random() * 2) - 1) * 0.1
-                h = (graph_height - len(rights)) / 2 + idx
+                h = ((graph_height - len(rights)) / 2 + idx) + + ((random() * 2) - 1) * 0.1
                 G.add_node(r,pos=(w,h),label=r)
             for l, r in self.track_connections:
                 G.add_edge(l.name, r.name)
             
         else:
-            lefts = [conn[0].name for conn in self.track_connections if conn[1].name == f"track_{track_name}"] 
-            rights = [conn[1].name for conn in self.track_connections if conn[0].name == f"track_{track_name}"] 
+            lefts = [conn[1].name for conn in self.track_connections if conn[0].name == f"track_{track_name}"] 
+            rights = [conn[0].name for conn in self.track_connections if conn[1].name == f"track_{track_name}"] 
             for idx, l in enumerate(lefts):
                 G.add_node(l,pos=(0,idx),label=l)
             for idx, r in enumerate(rights):
@@ -255,17 +341,51 @@ class ShuntingYard:
         nx.draw_networkx_labels(G, pos, labels = {key:key for key in pos.keys()}, font_size = 12)
         nx.draw(G, pos) 
 
+        if savefig:
+            plt.savefig('ShuntingYard.png')
+            plt.close()
+        else:
+            plt.show()
+
+    def _fix_train_locations(self):
+        self.tracks[-1].length = sum(t.length for t in self.trains)
+        for train in self.trains:
+            if train.location is None:
+                self.tracks[-1].num_trains += 1
+                self.tracks[-1].length -= train.length
+                train.location = self.tracks[-1]
+                train.order = self.tracks[-1].num_trains
+
+    def _simplify_track_lengths(self):
+        all_lengths = sorted([t.length for t in self.trains])
+        max_train_length = all_lengths[-1]
+        for track in self.tracks:
+            if track.length < max_train_length:
+                track.length = max_train_length
+                track.parking = False
+            else:
+                n = 1
+                while n < len(all_lengths) and sum(all_lengths[:n]) < track.length:
+                    n += 1
+                track.length = min(track.length, n*max_train_length)
+
+
     def generate_instance(self):
         
         self._generate_entry_track()
+        self._fix_train_locations()
+        self._simplify_track_lengths()
 
         instance_text = ["(define ", f"(problem {self.instance_name})", f"(:domain {self.domain_name})"]
         instance_text += self._generate_objects()
         instance_text += self._generate_init()
         instance_text += self._generate_goal()
         if self.is_numeric and not self.is_temporal:
-            instance_text += ["", "(:metric minimize (cost))", ")"]
-        filename = Path(self.instance_name + "_" + str(len(self.trains)) + "t.pddl")
+            instance_text += ["", "(:metric minimize (total-cost))", ")"]
+        filename = Path(self.instance_name +\
+                        #  "_" + str(len(self.track_connections)) +\
+                        #  "c_" + str(len(self.trains)) + "t" +\
+                              ".pddl")
         filename.touch(exist_ok=True) 
 
         if os.path.exists(filename):
@@ -321,7 +441,7 @@ class ShuntingYard:
         instance_text = []
         if not self.is_temporal:
             instance_text += ["\t; metric", "\t; ================================ "]
-            instance_text += [f"\t(= (cost) 0)"]
+            instance_text += [f"\t(= (total-cost) 0)"]
             instance_text += [""]
         if len(self.drivers) > 0:
             instance_text += ["\t; drivers", "\t; ================================ "]
@@ -333,13 +453,12 @@ class ShuntingYard:
             instance_text += [f"\t(= (max_num_consecutive_movements) {self.max_concurrent_movements})"]
             instance_text += [f"\t(= (num_consecutive_movements) 0)", ""]
 
-        max_train_length = max([t.length for t in self.trains])
 
         instance_text += ["\t; track parking", "\t; ================================ "]
         if not self.negative_preconditions:
-            instance_text += [f"\t(parking_allowed {track.name})" for track in self.tracks if track.parking != self.negative_preconditions and track.length >= max_train_length]
+            instance_text += [f"\t(parking_allowed {track.name})" for track in self.tracks if track.parking]
         else:
-            instance_text += [f"\t(parking_disallowed {track.name})" for track in self.tracks[:-1] if track.parking != self.negative_preconditions or track.length < max_train_length]
+            instance_text += [f"\t(parking_disallowed {track.name})" for track in self.tracks[:-1] if not track.parking]
             instance_text += [f"\t(parking_disallowed {self.tracks[-1].name})"]
         instance_text += [""]
 
@@ -348,18 +467,14 @@ class ShuntingYard:
         instance_text += [""]
 
         instance_text += ["\t; track lengths", "\t; ================================ "]
-        instance_text += [f"\t(= (track_length {track.name}) {max(track.length, max_train_length)})" for track in self.tracks[:-1]]
+        instance_text += [f"\t(= (track_length {track.name}) {track.length})" for track in self.tracks[:-1]]
         instance_text += [f"\t(= (track_length {self.tracks[-1].name}) {self.tracks[-1].length})"]
         instance_text += [""]
         
 
         instance_text += ["\t; track trains", "\t; ================================ "]
         for idx, track in enumerate(self.tracks):
-            if idx == (len(self.tracks) - 1):
-                num_trains = len(self.trains)
-            else:
-                num_trains = 0
-            instance_text += [f"\t(= (num_trains_on_track {track.name}) {num_trains})"]
+            instance_text += [f"\t(= (num_trains_on_track {track.name}) {track.num_trains})"]
         instance_text += [""]
 
         instance_text += ["\t; track spaces", "\t; ================================ "]
@@ -376,7 +491,12 @@ class ShuntingYard:
                 instance_text += [f"\t(= (stack_Aside_distance_to_end_of_track {track.name}) 0)"]
                 instance_text += [f"\t(= (stack_Bside_distance_to_end_of_track {track.name}) {aside_len})"]
         if self.track_occupation_strategy == TrackOccupationStrategy.ORDER:
-            instance_text += [f"\t(= (train_order_on_track {self.trains[i].name}) {i+1})" for i in range(len(self.trains))]
+            if self.is_entry_connection_a_side:
+                orders = range(1,len(self.trains)+1)
+            else:
+                orders = list(range(len(self.trains),0,-1))
+
+            instance_text += [f"\t(= (train_order_on_track {self.trains[i].name}) {self.trains[i].order})" for i, o in enumerate(orders)]
 
         instance_text += [""]
         instance_text += ["\t; inter track connections", "\t; ================================ "]
@@ -411,13 +531,14 @@ class ShuntingYard:
         instance_text += [""]
 
         instance_text += ["\t; train locations", "\t; ================================ "]
-        instance_text += [f"\t(train_at {train.name} {self.tracks[-1].name})" for train in self.trains]
+        instance_text += [f"\t(train_at {train.name} {train.location.name})" for train in self.trains]
         instance_text += [""]
 
-        current_distance = 0
-        for train in self.trains:
-            instance_text += [f"\t(= (train_distance_to_end_of_track {train.name}) {current_distance})"]
-            current_distance += train.length
+        if self.track_occupation_strategy != TrackOccupationStrategy.ORDER:
+            current_distance = 0
+            for train in self.trains:
+                instance_text += [f"\t(= (train_distance_to_end_of_track {train.name}) {current_distance})"]
+                current_distance += train.length
 
         return instance_text
         
@@ -459,22 +580,16 @@ class ShuntingYard:
         
 
     def _generate_goal_numeric(self):
-        instance_text = []
-        if len(self.exit_order) > 0:
-            instance_text += ["\t; train exit", "\t; ================================ "]
-            instance_text += [f"\t(train_at {train.name} {self.tracks[-1].name})" for train in self.trains]
-            instance_text += ["\t; train exit order", "\t; ================================ "]
-            instance_text += [f"\t(> (train_distance_to_end_of_track {self.exit_order[i].name}) (train_distance_to_end_of_track {self.exit_order[i+1].name}))" for i in range(len(self.exit_order)-1)]
-            instance_text += ["\t; train parking", "\t; ================================ "]
-            instance_text += [f"\t(has_parked {train.name})" for train in self.trains]
-        elif self.goal_states == GoalStates.IS_PARKING or self.goal_states == GoalStates.SERVICED_PARKING:
-            instance_text += ["\t; train parking", "\t; ================================ "]
-            instance_text += [f"\t(is_parking {train.name})" for train in self.trains]
-        if self.goal_states == GoalStates.SERVICED_PARKING:
-            instance_text += ["\t; train service", "\t; ================================ "]
-            instance_text += [f"\t(was_serviced {train.name})" for train in self.trains]
-
-        
+        instance_text = ["\t; train goals", "\t; ================================ "]
+        for train in self.trains:
+            if train.goal in (GoalStates.IS_PARKING, GoalStates.PARKING_AFTER_SERVICE):
+                instance_text += [f"\t(is_parking {train.name})"]
+            if train.goal in (GoalStates.WAS_SERVICED, GoalStates.PARKING_AFTER_SERVICE, GoalStates.LOCATION_AFTER_SERVICE):
+                instance_text += [f"\t(was_serviced {train.name})"]
+            if train.goal == GoalStates.EXIT:
+                instance_text += [f"\t(not (is_active {train.name}))"]
+            if train.goal in (GoalStates.LOCATION, GoalStates.LOCATION_AFTER_SERVICE):
+                instance_text += [f"\t(train_at {train.name} {train.destination.name}))"]        
         
         return instance_text
     
