@@ -184,69 +184,6 @@
     )
 )
 
-; (:action move_Aside2
-;     :parameters (
-;         ?train - train
-;         ?trackFrom - track
-;         ?trackMiddle - track
-;         ?trackTo - track
-;     )
-;     :precondition (and 
-;         (is_active ?train)
-;         (not (is_parking ?train))
-;         (train_at ?train ?trackFrom)
-
-;         (not (block ?trackTo))
-;         (not (block ?trackMiddle))
-;         (not (block ?trackFrom))
-
-;         (tracks_linked ?trackFrom ?trackMiddle)
-;         (= (num_trains_on_track ?trackMiddle) 0)
-;         (tracks_linked ?trackMiddle ?trackTo)
-
-;         (>= (track_length ?trackTo) (train_length ?train))
-
-;         (= (train_order_on_track ?train) 1)
-
-;     )
-;     :effect (and 
-;         (increase (total-cost) 1) 
-;         (when (not (is_direction_Aside ?train)) 
-;             (increase (total-cost) 10) 
-;         )
-;         (is_direction_Aside ?train)
-
-;         (not (train_at ?train ?trackFrom))
-;         (train_at ?train ?trackTo)
-
-;         (forall (?otherTrain - train) 
-;             (when 
-;                 (and (not (= ?otherTrain ?train)) (train_at ?otherTrain ?trackFrom))
-;                 (decrease (train_order_on_track ?otherTrain) 1)
-;             )
-;         )
-;         (increase (track_length ?trackFrom) (train_length ?train))
-;         (decrease (track_length ?trackTo) (train_length ?train))
-        
-;         (assign (train_order_on_track ?train) (+ (num_trains_on_track ?trackTo) 1))
-
-;         (decrease (num_trains_on_track ?trackFrom) 1)
-;         (increase (num_trains_on_track ?trackTo) 1)
-
-;         (block ?trackFrom)
-;         (block_mutex_holder ?trackFrom ?train)
-
-;         (block ?trackMiddle)
-;         (block_mutex_holder ?trackMiddle ?train)
-
-;         (not (servicable ?train))
-;         (when (service_allowed ?trackTo) (servicable ?train))
-
-;         (not (parkable ?train))
-;         (when (not (parking_disallowed ?trackTo)) (parkable ?train))
-;     )
-; )
-
 (:action move_Bside
     :parameters (
         ?train - train

@@ -9,42 +9,18 @@ import matplotlib.pyplot as plt
 from enum import Enum
 from random import random
 
-class DomainConfig(Enum):
-    Numeric = 1
-    TemporalAndNumeric = 2
-
-class DirectionStrategy(Enum):
-    Aside = 1
-    Bside = 2
-    NO_DIRECTION = 3
-
-class TrackOccupationStrategy(Enum):
-    OCCUPIED_LENGTH = 1
-    STACK_LOCATION = 2
-    ORDER = 3
-    
-class GoalStates(Enum):
-    IS_PARKING = 1
-    WAS_SERVICED = 2
-    PARKING_AFTER_SERVICE = 3
-    LOCATION_AFTER_SERVICE = 4
-    EXIT = 5
-    LOCATION = 6
-
-class Direction(Enum):
-    ASIDE = 1
-    BSIDE = 2
-
+from .shared import Direction, DomainConfig, DirectionStrategy, TrackOccupationStrategy, GoalStates
+from .generator import YardGenerator
 class Train:
 
-    def __init__(self, name, length, speed=0, active=True):
+    def __init__(self, name, length, goal=None, speed=0, active=True):
         self.name = "train_" + name
         self.length = length
         self.speed = speed
         self.active = active
         self.order = 1
         self.location: Track = None
-        self.goal: GoalStates = None
+        self.goal: GoalStates = goal
         self.destination: Track = None
 
     def __str__(self) -> str:
@@ -85,10 +61,10 @@ class ShuntingYard:
         self.instance_name = instance_name
         
         self.drivers = []
-        self.trains = []
-        self.tracks = []
-        self.track_connections = []
-        self.entry_track_connections = []
+        self.trains: List[Train] = []
+        self.tracks: List[Track] = []
+        self.connections: List[Tuple[int, int]] = []
+        self.entry_connections: List[int] = []
         self.exit_order = []
 
         self.is_entry_connection_a_side = True
@@ -206,8 +182,13 @@ class ShuntingYard:
                         self.trains[old_tn_i].order += 1
             else:
                 self.trains[tn_i].order = self.tracks[tk_i].num_trains
-            print(info)
-            print(self.trains[tn_i].location)
+
+
+    def load_generator(self, generator: YardGenerator):
+        self.trains = [Train(str(i+1), generator.trains[i].length, generator.trains[i].goal) for i in range(len(generator.trains))]
+        self.tracks = [Track(f'{chr(97+generator.tracks[i].layer)}_{i+1}', generator.tracks[i].length,  generator.tracks[i].parking,  generator.tracks[i].service) for i in range(len(generator.tracks))]
+        self.connections = [(self.tracks[i], self.tracks[j]) for i, j in generator.connections]
+        self.entry_connections = [self.tracks[i].name for i in generator.entry_conns]
 
     def get_train_idx(self, name: str):
         for i in range(len(self.trains)):
@@ -247,21 +228,21 @@ class ShuntingYard:
         self.tracks = [Track(name=name, length=length, parking=parking) for name, length, parking in tracks]
 
     def set_track_connections(self, track_connections: List[Tuple[str, str]]):
-        self.track_connections = []
+        self.connections = []
         for bside, aside in track_connections:
             track_bside =  next(track for track in self.tracks if track.name == "track_" + bside)
             track_aside =  next(track for track in self.tracks if track.name == "track_" + aside)
 
-            self.track_connections.append((track_bside,track_aside))
+            self.connections.append((track_bside,track_aside))
 
     def set_entry_track_connections(self, entry_track_connections: List[str], a_side: bool = True):
         self.is_entry_connection_a_side = a_side
-        self.entry_track_connections = entry_track_connections
+        self.entry_connections = entry_track_connections
 
     def remove_track(self, name: str):
         self.tracks = [t for t in self.tracks if t.name != f"track_{name}"]
-        self.track_connections = [c for c in self.track_connections if f"track_{name}" not in str(c)]
-        self.entry_track_connections = [c for c in self.entry_track_connections if f"track_{name}" not in str(c)]
+        self.connections = [c for c in self.connections if f"track_{name}" not in str(c)]
+        self.entry_connections = [c for c in self.entry_connections if f"track_{name}" not in str(c)]
 
     def order_nodes(self, lefts):
         new_lefts = []
@@ -269,11 +250,11 @@ class ShuntingYard:
         for left in lefts:
             if left not in new_lefts:
                 new_lefts.append(left)
-                rights = [c[0].name for c in self.track_connections if c[1].name == left]
+                rights = [c[0].name for c in self.connections if c[1].name == left]
                 for right in rights:
                     if right not in new_rights:
                         new_rights.append(right)
-                    similar_lefts = [c[1].name for c in self.track_connections if c[1].name in lefts and c[0].name == right]
+                    similar_lefts = [c[1].name for c in self.connections if c[1].name in lefts and c[0].name == right]
                     for l in similar_lefts:
                         if l not in new_lefts:
                             new_lefts.append(l)
@@ -287,10 +268,10 @@ class ShuntingYard:
         G = nx.Graph() 
 
         if track_name is None:
-            cons = self.track_connections.copy()
-            lefts = [conn[1].name for conn in self.track_connections] 
-            rights = [conn[0].name for conn in self.track_connections]
-            current_lefts = [t for t in lefts if t not in rights]
+            cons = self.connections.copy()
+            lefts = [conn[1].name for conn in self.connections] 
+            rights = [conn[0].name for conn in self.connections]
+            current_lefts = [t for t in lefts if t not in rights]           
             start_x = 0
             nodes_added = []
             graph_height = len(self.tracks) / 2
@@ -309,8 +290,8 @@ class ShuntingYard:
                 lefts = [conn[1].name for conn in cons ] 
                 rights = [conn[0].name for conn in cons ] 
                 current_lefts = next_lefts
-            lefts = [conn[1].name for conn in self.track_connections if conn[1].name not in nodes_added]
-            rights = [conn[0].name for conn in self.track_connections if conn[0].name not in nodes_added]
+            lefts = [conn[1].name for conn in self.connections if conn[1].name not in nodes_added]
+            rights = [conn[0].name for conn in self.connections if conn[0].name not in nodes_added]
             for idx, l in enumerate(lefts):
                 w = start_x + ((random() * 2) - 1) * 0.1
                 h = ((graph_height - len(lefts)) / 2 + idx) + + ((random() * 2) - 1) * 0.1
@@ -319,15 +300,15 @@ class ShuntingYard:
                 w = start_x + ((random() * 2) - 1) * 0.1
                 h = ((graph_height - len(rights)) / 2 + idx) + + ((random() * 2) - 1) * 0.1
                 G.add_node(r,pos=(w,h),label=r)
-            for l, r in self.track_connections:
+            for l, r in self.connections:
                 G.add_edge(l.name, r.name)
             
         else:
-            lefts = [conn[1].name for conn in self.track_connections if conn[0].name == f"track_{track_name}"] 
-            rights = [conn[0].name for conn in self.track_connections if conn[1].name == f"track_{track_name}"] 
+            lefts = [conn[1].name for conn in self.connections if conn[0].name == f"track_{track_name}"] 
+            rights = [conn[0].name for conn in self.connections if conn[1].name == f"track_{track_name}"] 
             for idx, l in enumerate(lefts):
                 G.add_node(l,pos=(0,idx),label=l)
-            for idx, r in enumerate(rights):
+            for idx, r in enumerate(rights):            
                 G.add_node(r,pos=(2,idx),label=r)
             h = max(len(lefts), len(rights)) / 2
             G.add_node(track_name,pos=(1,h))
@@ -352,9 +333,10 @@ class ShuntingYard:
         for train in self.trains:
             if train.location is None:
                 self.tracks[-1].num_trains += 1
-                self.tracks[-1].length -= train.length
-                train.location = self.tracks[-1]
+                if self.track_occupation_strategy == TrackOccupationStrategy.ORDER:
+                    self.tracks[-1].length -= train.length
                 train.order = self.tracks[-1].num_trains
+                train.location = self.tracks[-1]
 
     def _simplify_track_lengths(self):
         all_lengths = sorted([t.length for t in self.trains])
@@ -381,7 +363,9 @@ class ShuntingYard:
         instance_text += self._generate_init()
         instance_text += self._generate_goal()
         if self.is_numeric and not self.is_temporal:
-            instance_text += ["", "(:metric minimize (total-cost))", ")"]
+            instance_text += ["", "(:metric minimize (total-cost))"]
+        instance_text += [")"]
+        
         filename = Path(self.instance_name +\
                         #  "_" + str(len(self.track_connections)) +\
                         #  "c_" + str(len(self.trains)) + "t" +\
@@ -500,7 +484,7 @@ class ShuntingYard:
 
         instance_text += [""]
         instance_text += ["\t; inter track connections", "\t; ================================ "]
-        instance_text += [f"\t(tracks_linked {track_bside.name} {track_aside.name})" for track_bside, track_aside in self.track_connections]
+        instance_text += [f"\t(tracks_linked {track_bside.name} {track_aside.name})" for track_bside, track_aside in self.connections]
         instance_text += [""]
 
         instance_text += ["\t; train activity", "\t; ================================ "]
@@ -559,12 +543,12 @@ class ShuntingYard:
         else:
             self.tracks[-1] = entry_track
 
-        for conn in self.entry_track_connections:
-            other_track = next(track for track in self.tracks if track.name == "track_" + conn)
+        for conn in self.entry_connections:
+            other_track = next(track for track in self.tracks if track.name.endswith(conn))
             if self.is_entry_connection_a_side:
-                self.track_connections.append((entry_track, other_track))
+                self.connections.append((entry_track, other_track))
             else:
-                self.track_connections.append((other_track, entry_track))
+                self.connections.append((other_track, entry_track))
 
 
     def _generate_entry_track_classical(self):
