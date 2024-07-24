@@ -22,6 +22,7 @@ class Train:
         self.location: Track = None
         self.goal: GoalStates = goal
         self.destination: Track = None
+        self.graph: nx.Graph = None
 
     def __str__(self) -> str:
         return f"name: {self.name} --- length: {self.length} --- speed: {self.speed} --- active: {self.active}" 
@@ -186,7 +187,7 @@ class ShuntingYard:
 
     def load_generator(self, generator: YardGenerator):
         self.trains = [Train(str(i+1), generator.trains[i].length, generator.trains[i].goal) for i in range(len(generator.trains))]
-        self.tracks = [Track(f'{chr(97+generator.tracks[i].layer)}_{i+1}', generator.tracks[i].length,  generator.tracks[i].parking,  generator.tracks[i].service) for i in range(len(generator.tracks))]
+        self.tracks = [Track(f'{chr(97+track.layer)}_{i+1}', track.length, track.parking,  track.service) for i, track in enumerate(generator.tracks)]
         self.connections = [(self.tracks[i], self.tracks[j]) for i, j in generator.connections]
         self.entry_connections = [self.tracks[i].name for i in generator.entry_conns]
 
@@ -262,65 +263,52 @@ class ShuntingYard:
                 continue
         return new_lefts, new_rights
             
-             
-
-    def visualize(self, track_name=None, figsize=(12,12), savefig: bool = False): 
+    def draw_graph(self):
         G = nx.Graph() 
 
-        if track_name is None:
-            cons = self.connections.copy()
-            lefts = [conn[1].name for conn in self.connections] 
-            rights = [conn[0].name for conn in self.connections]
-            current_lefts = [t for t in lefts if t not in rights]           
-            start_x = 0
-            nodes_added = []
-            graph_height = len(self.tracks) / 2
-            while len(cons) > 0:
-                current_lefts, next_lefts = self.order_nodes(current_lefts)
-                current_lefts = [l for l in current_lefts if l not in nodes_added]
-                if len(current_lefts) == 0:
-                    break
-                for idx, l in enumerate(current_lefts):
-                    w = start_x + ((random() * 2) - 1) * 0.1
-                    h = ((graph_height - len(current_lefts)) / 2 + idx) + ((random() * 2) - 1) * 0.1
-                    G.add_node(l,pos=(w,h),label=l)
-                    nodes_added.append(l)
-                start_x += 1
-                cons = [c for c in cons if c[1].name not in current_lefts]
-                lefts = [conn[1].name for conn in cons ] 
-                rights = [conn[0].name for conn in cons ] 
-                current_lefts = next_lefts
-            lefts = [conn[1].name for conn in self.connections if conn[1].name not in nodes_added]
-            rights = [conn[0].name for conn in self.connections if conn[0].name not in nodes_added]
-            for idx, l in enumerate(lefts):
+        cons = self.connections.copy()
+        lefts = [conn[1].name for conn in self.connections] 
+        rights = [conn[0].name for conn in self.connections]
+        current_lefts = [t for t in lefts if t not in rights]           
+        start_x = 0
+        nodes_added = []
+        graph_height = len(self.tracks) / 2
+        while len(cons) > 0:
+            current_lefts, next_lefts = self.order_nodes(current_lefts)
+            current_lefts = [l for l in current_lefts if l not in nodes_added]
+            if len(current_lefts) == 0:
+                break
+            for idx, l in enumerate(current_lefts):
                 w = start_x + ((random() * 2) - 1) * 0.1
-                h = ((graph_height - len(lefts)) / 2 + idx) + + ((random() * 2) - 1) * 0.1
+                h = ((graph_height - len(current_lefts)) / 2 + idx) + ((random() * 2) - 1) * 0.1
                 G.add_node(l,pos=(w,h),label=l)
-            for idx, r in enumerate(rights):
-                w = start_x + ((random() * 2) - 1) * 0.1
-                h = ((graph_height - len(rights)) / 2 + idx) + + ((random() * 2) - 1) * 0.1
-                G.add_node(r,pos=(w,h),label=r)
-            for l, r in self.connections:
-                G.add_edge(l.name, r.name)
-            
-        else:
-            lefts = [conn[1].name for conn in self.connections if conn[0].name == f"track_{track_name}"] 
-            rights = [conn[0].name for conn in self.connections if conn[1].name == f"track_{track_name}"] 
-            for idx, l in enumerate(lefts):
-                G.add_node(l,pos=(0,idx),label=l)
-            for idx, r in enumerate(rights):            
-                G.add_node(r,pos=(2,idx),label=r)
-            h = max(len(lefts), len(rights)) / 2
-            G.add_node(track_name,pos=(1,h))
-            for idx, l in enumerate(lefts):
-                G.add_edge(l,track_name)
-            for idx, r in enumerate(rights):
-                G.add_edge(track_name, r)
+                nodes_added.append(l)
+            start_x += 1
+            cons = [c for c in cons if c[1].name not in current_lefts]
+            lefts = [conn[1].name for conn in cons ] 
+            rights = [conn[0].name for conn in cons ] 
+            current_lefts = next_lefts
+        lefts = [conn[1].name for conn in self.connections if conn[1].name not in nodes_added]
+        rights = [conn[0].name for conn in self.connections if conn[0].name not in nodes_added]
+        for idx, l in enumerate(lefts):
+            w = start_x + ((random() * 2) - 1) * 0.1
+            h = ((graph_height - len(lefts)) / 2 + idx) + + ((random() * 2) - 1) * 0.1
+            G.add_node(l,pos=(w,h),label=l)
+        for idx, r in enumerate(rights):
+            w = start_x + ((random() * 2) - 1) * 0.1
+            h = ((graph_height - len(rights)) / 2 + idx) + + ((random() * 2) - 1) * 0.1
+            G.add_node(r,pos=(w,h),label=r)
+        for l, r in self.connections:
+            G.add_edge(l.name, r.name)
+
+        self.graph = G
+
+    def visualize(self, savefig: bool = False, figsize: Tuple[int, int] = (12,12)): 
 
         plt.figure(figsize=figsize) 
-        pos=nx.get_node_attributes(G,'pos')
-        nx.draw_networkx_labels(G, pos, labels = {key:key for key in pos.keys()}, font_size = 12)
-        nx.draw(G, pos) 
+        pos=nx.get_node_attributes(self.graph,'pos')
+        nx.draw_networkx_labels(self.graph, pos, labels = {key:key for key in pos.keys()}, font_size = 12)
+        nx.draw(self.graph, pos) 
 
         if savefig:
             plt.savefig('ShuntingYard.png')
@@ -568,7 +556,9 @@ class ShuntingYard:
         for train in self.trains:
             if train.goal in (GoalStates.IS_PARKING, GoalStates.PARKING_AFTER_SERVICE):
                 instance_text += [f"\t(is_parking {train.name})"]
-            if train.goal in (GoalStates.WAS_SERVICED, GoalStates.PARKING_AFTER_SERVICE, GoalStates.LOCATION_AFTER_SERVICE):
+            if train.goal in (GoalStates.PARKABLE_AFTER_SERVICE, GoalStates.PARKABLE):
+                instance_text += [f"\t(parkable {train.name})"]
+            if train.goal in (GoalStates.WAS_SERVICED, GoalStates.PARKING_AFTER_SERVICE, GoalStates.LOCATION_AFTER_SERVICE, GoalStates.PARKABLE_AFTER_SERVICE):
                 instance_text += [f"\t(was_serviced {train.name})"]
             if train.goal == GoalStates.EXIT:
                 instance_text += [f"\t(not (is_active {train.name}))"]

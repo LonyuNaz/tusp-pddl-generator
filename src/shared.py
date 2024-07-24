@@ -22,6 +22,8 @@ class GoalStates(Enum):
     LOCATION_AFTER_SERVICE = 4
     EXIT = 5
     LOCATION = 6
+    PARKABLE_AFTER_SERVICE = 7
+    PARKABLE = 8
 
 class Direction(Enum):
     ASIDE = 1
